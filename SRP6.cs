@@ -2,7 +2,7 @@ using System.Numerics;
 
 namespace SRP6ClientDemo;
 
-public unsafe class SRP6
+public class SRP6
 {
     public const int EPHEMERAL_KEY_LENGTH = 32;
     public const int SESSION_KEY_LENGTH = 40;
@@ -28,6 +28,9 @@ public unsafe class SRP6
         _bK.AsSpan().Fill(0);
         _bM1.AsSpan().Fill(0);
         _bM2.AsSpan().Fill(0);
+
+        accountName = accountName.ToUpperInvariant();
+        accountPassword = accountPassword.ToUpperInvariant();
 
         var N = new BigInteger(bN, true);
         var g = new BigInteger(bg, true);
@@ -73,7 +76,7 @@ public unsafe class SRP6
 
         SHA1Hash hCredentials = h1;
         hCredentials.Initialize();
-        hCredentials.UpdateData((accountName + ":" + accountPassword).ToUpperInvariant());
+        hCredentials.UpdateData(accountName + ":" + accountPassword);
         hCredentials.Finish();
 
         SHA1Hash hx = h2;
@@ -156,7 +159,7 @@ public unsafe class SRP6
 
         SHA1Hash hUsername = h1;
         hUsername.Initialize();
-        hUsername.UpdateData(accountName.ToUpper());
+        hUsername.UpdateData(accountName);
         hUsername.Finish();
 
         SHA1Hash hM1 = h2;

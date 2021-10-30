@@ -343,11 +343,7 @@ public unsafe class AuthSession : SocketBase
 
                 if (header.Result != WOW_SUCCESS)
                 {
-                    Console.WriteLine("=================================");
-                    Console.WriteLine("Received A {0}", Util.ByteArrayToHexStr(_srp6.GetClientEphemeralA()));
-                    Console.WriteLine("K {0}", Util.ByteArrayToHexStr(_srp6.GetClientK()));
-                    Console.WriteLine("*===============================*");
-
+                    Console.WriteLine("[Authentication failed!]");
                     Console.WriteLine(AuthResultToStr(header.Result));
                     CloseSocket();
                     return;
