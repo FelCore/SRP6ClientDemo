@@ -2,54 +2,41 @@ using System.Numerics;
 
 namespace SRP6ClientDemo;
 
-public class SRP6
+public unsafe class SRP6
 {
-    public SRP6()
+    public const int EPHEMERAL_KEY_LENGTH = 32;
+    public const int SESSION_KEY_LENGTH = 40;
+
+    /// <summary>
+    /// Process SRP6 K, M1 and M2 from server challenge response.
+    /// </summary>
+    /// <param name="accountName">Account name</param>
+    /// <param name="accountPassword">Account password</param>
+    /// <param name="bN">Server modulus</param>
+    /// <param name="bg">Server generator</param>
+    /// <param name="bB">Server public ephemeral Key</param>
+    /// <param name="bSalt">Server salt</param>
+    public void ProcessChallenge(
+        string accountName,
+        string accountPassword,
+        ReadOnlySpan<byte> bN,
+        ReadOnlySpan<byte> bg,
+        ReadOnlySpan<byte> bB,
+        ReadOnlySpan<byte> bSalt)
     {
-        Reset();
-    }
+        _bA.AsSpan().Fill(0);
+        _bK.AsSpan().Fill(0);
+        _bM1.AsSpan().Fill(0);
+        _bM2.AsSpan().Fill(0);
 
-    public void Reset()
-    {
-        AccountName = "";
-        AccountPassword = "";
+        var N = new BigInteger(bN, true);
+        var g = new BigInteger(bg, true);
+        var B = new BigInteger(bB, true);
 
-        g = N = BigInteger.Zero;
-
-        k = new BigInteger(3u);
+        // Client secret
+        var a = BigInteger.Zero;
         a.SetRandom(19 * 8);
 
-        B = s = A = I = x = u = S = K = M1 = M2 = BigInteger.Zero;
-    }
-
-    public void SetCredentials(string name, string password)
-    {
-        AccountName = name.ToUpperInvariant();
-        AccountPassword = password.ToUpperInvariant();
-    }
-
-    public void SetServerModulus(ReadOnlySpan<byte> buffer)
-    {
-        N = new BigInteger(buffer, true);
-    }
-
-    public void SetServerGenerator(ReadOnlySpan<byte> buffer)
-    {
-        g = new BigInteger(buffer, true);
-    }
-
-    public void SetServerEphemeralB(ReadOnlySpan<byte> buffer)
-    {
-        B = new BigInteger(buffer, true);
-    }
-
-    public void SetServerSalt(ReadOnlySpan<byte> buffer)
-    {
-        s = new BigInteger(buffer, true);
-    }
-
-    public void Calculate()
-    {
         // Safeguards
         if (B.IsZero || (B % N).IsZero)
         {
@@ -69,48 +56,52 @@ public class SRP6
         // I = H(g) xor H(N)
 
         SHA1Hash hg = h1;
-        hg.UpdateData(g);
+        hg.UpdateData(bg);
         hg.Finish();
 
         SHA1Hash hN = h2;
-        hN.UpdateData(N);
+        hN.UpdateData(bN);
         hN.Finish();
 
-        Span<byte> bI = stackalloc byte[20];
+        // g hash ^ N hash
+        Span<byte> gNHash = stackalloc byte[20];
 
         for (int i = 0; i < 20; i++)
-            bI[i] = (byte)(hg.GetDigest()[i] ^ hN.GetDigest()[i]);
-
-        I = new BigInteger(bI, true);
+            gNHash[i] = (byte)(hg.GetDigest()[i] ^ hN.GetDigest()[i]);
 
         // x = H(s, H(C, ":", P));
 
         SHA1Hash hCredentials = h1;
         hCredentials.Initialize();
-        hCredentials.UpdateData(AccountName + ":" + AccountPassword);
+        hCredentials.UpdateData((accountName + ":" + accountPassword).ToUpperInvariant());
         hCredentials.Finish();
 
         SHA1Hash hx = h2;
         hx.Initialize();
-        hx.UpdateData(s);
+        hx.UpdateData(bSalt);
         hx.UpdateData(hCredentials.GetDigest());
         hx.Finish();
 
-        x = new BigInteger(hx.GetDigest(), true);
+        // Client credentials
+
+        var x = new BigInteger(hx.GetDigest(), true);
 
         // A
 
-        A = g.ModPow(a, N);
+        var A = g.ModPow(a, N);
+        A.TryWriteBytes(_bA, out var _, true);
 
         // u = H(A, B)
 
         SHA1Hash hu = h1;
         hu.Initialize();
-        hu.UpdateData(A);
-        hu.UpdateData(B);
+        hu.UpdateData(_bA);
+        hu.UpdateData(bB);
         hu.Finish();
 
-        u = new BigInteger(hu.GetDigest(), true);
+        // Scrambling
+
+        var u = new BigInteger(hu.GetDigest(), true);
 
         if (u.IsZero)
         {
@@ -118,9 +109,12 @@ public class SRP6
             return;
         }
 
+        // Multiplier
+        var k = new BigInteger(3u);
+
         // S
 
-        S = ((B + k * (N - g.ModPow(x, N))) % N).ModPow(a + u * x, N);
+        var S = ((B + k * (N - g.ModPow(x, N))) % N).ModPow(a + u * x, N);
 
         if (S.IsZero || S.Sign == -1)
         {
@@ -152,45 +146,41 @@ public class SRP6
         hOdd.UpdateData(SPart1);
         hOdd.Finish();
 
-        Span<byte> bK = stackalloc byte[40];
-
         for (int i = 0; i < 20; i++)
         {
-            bK[i * 2] = hEven.GetDigest()[i];
-            bK[i * 2 + 1] = hOdd.GetDigest()[i];
+            _bK[i * 2] = hEven.GetDigest()[i];
+            _bK[i * 2 + 1] = hOdd.GetDigest()[i];
         }
-
-        K = new BigInteger(bK, true);
 
         // M1 = H(I, H(C), s, A, B, K)
 
         SHA1Hash hUsername = h1;
         hUsername.Initialize();
-        hUsername.UpdateData(AccountName);
+        hUsername.UpdateData(accountName.ToUpper());
         hUsername.Finish();
 
         SHA1Hash hM1 = h2;
         hM1.Initialize();
-        hM1.UpdateData(I);
+        hM1.UpdateData(gNHash);
         hM1.UpdateData(hUsername.GetDigest());
-        hM1.UpdateData(s);
-        hM1.UpdateData(A);
-        hM1.UpdateData(B);
-        hM1.UpdateData(K);
+        hM1.UpdateData(bSalt);
+        hM1.UpdateData(_bA);
+        hM1.UpdateData(bB);
+        hM1.UpdateData(_bK);
         hM1.Finish();
 
-        M1 = new BigInteger(hM1.GetDigest(), true);
+        hM1.GetDigest(_bM1);
 
         // M2 = H(A, M1, K)
 
         SHA1Hash hM2 = h1;
         hM2.Initialize();
-        hM2.UpdateData(A);
-        hM2.UpdateData(M1);
-        hM2.UpdateData(K);
+        hM2.UpdateData(_bA);
+        hM2.UpdateData(hM1.GetDigest());
+        hM2.UpdateData(_bK);
         hM2.Finish();
 
-        M2 = new BigInteger(hM2.GetDigest(), true);
+        hM2.GetDigest(_bM2);
 
         h1.Dispose();
         h2.Dispose();
@@ -198,29 +188,16 @@ public class SRP6
 
     public bool IsValidM2(ReadOnlySpan<byte> buffer)
     {
-        return M2 == new BigInteger(buffer, true);
+        return _bM2.AsSpan().SequenceEqual(buffer);
     }
 
-    public ref BigInteger GetClientEphemeralA() { return ref A; }
-    public ref BigInteger GetClientM1() { return ref M1; }
-    public ref BigInteger GetClientM2() { return ref M2; }
-    public ref BigInteger GetClientK() { return ref K; }
+    public ReadOnlySpan<byte> GetClientEphemeralA() { return _bA; }
+    public ReadOnlySpan<byte> GetClientM1() { return _bM1; }
+    public ReadOnlySpan<byte> GetClientM2() { return _bM2; }
+    public ReadOnlySpan<byte> GetClientK() { return _bK; }
 
-    string AccountName = "";
-    string AccountPassword = "";
-
-    BigInteger N; // Modulus
-    BigInteger g; // Generator
-    BigInteger k; // Multiplier
-    BigInteger B; // Server public
-    BigInteger s; // Server salt
-    BigInteger a; // Client secret
-    BigInteger A; // Client public
-    BigInteger I; // g hash ^ N hash
-    BigInteger x; // Client credentials
-    BigInteger u; // Scrambling
-    BigInteger S; // Key
-    BigInteger K; // Key based on S
-    BigInteger M1; // M1
-    BigInteger M2; // M2
+    byte[] _bA = new byte[EPHEMERAL_KEY_LENGTH]; // Client public
+    byte[] _bK = new byte[SESSION_KEY_LENGTH]; // Key based on S
+    byte[] _bM1 = new byte[SHA1Hash.SHA1_DIGEST_LENGTH]; // M1
+    byte[] _bM2 = new byte[SHA1Hash.SHA1_DIGEST_LENGTH]; // M2
 }

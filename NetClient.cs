@@ -8,10 +8,10 @@ namespace SRP6ClientDemo
         private readonly string _host;
         private readonly int _port;
 
-        private Socket? _socketInternal;
+        private Socket _socketInternal;
 
-        private T? _socket;
-        public T? Socket { get { return _socket; } }
+        private T _socket;
+        public T Socket { get { return _socket; } }
 
         private bool _connectFailed;
         public bool ConnectFailed { get { return _connectFailed;  } }

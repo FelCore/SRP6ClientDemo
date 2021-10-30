@@ -103,9 +103,6 @@ public unsafe class AuthSession : SocketBase
     SRP6 _srp6;
     string _token = "";
 
-    BigInteger _key;
-
-
     public AuthSession(Socket socket) : base(socket)
     {
         _srp6 = new();
@@ -197,21 +194,11 @@ public unsafe class AuthSession : SocketBase
         ByteBuffer packet = new();
         packet.Append((byte)AUTH_LOGON_PROOF);
 
-        ref var ephemeralA = ref _srp6.GetClientEphemeralA();
-        var byteCount = ephemeralA.GetByteCount(true);
-        Span<byte> ephemeralABytes = stackalloc byte[byteCount];
-        ephemeralA.TryWriteBytes(ephemeralABytes, out var _, true);
-
-        ref var clientM1 = ref _srp6.GetClientM1();
-        byteCount = clientM1.GetByteCount(true);
-        Span<byte> clientM1Bytes = stackalloc byte[byteCount];
-        clientM1.TryWriteBytes(clientM1Bytes, out var _, true);
-
         Span<byte> crcBytes = stackalloc byte[20];
         crc.TryWriteBytes(crcBytes, out var _, true);
 
-        packet.Append(ephemeralABytes);
-        packet.Append(clientM1Bytes);
+        packet.Append(_srp6.GetClientEphemeralA());
+        packet.Append(_srp6.GetClientM1());
         packet.Append(crcBytes);
 
         if (string.IsNullOrEmpty(_token))
@@ -325,26 +312,20 @@ public unsafe class AuthSession : SocketBase
                     Console.WriteLine("Has LogonChallengeResponse_Token");
                 }
 
-                _srp6.Reset();
-
-                _srp6.SetCredentials(AccountName, AccountPassword);
-
                 fixed (byte* ptrB = body.B)
-                    _srp6.SetServerEphemeralB(new ReadOnlySpan<byte>(ptrB, 32));
-
                 fixed (byte* ptrg = body.g)
-                    _srp6.SetServerGenerator(new ReadOnlySpan<byte>(ptrg, body.g_length));
-
                 fixed (byte* ptrN = body.N)
-                    _srp6.SetServerModulus(new ReadOnlySpan<byte>(ptrN, body.N_length));
-
                 fixed (byte* ptrSalt = body.Salt)
-                    _srp6.SetServerSalt(new ReadOnlySpan<byte>(ptrSalt, 32));
+                {
+                    _srp6.ProcessChallenge(
+                        AccountName, AccountPassword,
+                        new ReadOnlySpan<byte>(ptrN, body.N_length),
+                        new ReadOnlySpan<byte>(ptrg, body.g_length),
+                        new ReadOnlySpan<byte>(ptrB, 32),
+                        new ReadOnlySpan<byte>(ptrSalt, 32));
+                }
 
-                _srp6.Calculate();
-                _key = _srp6.GetClientK();
-
-                Console.WriteLine("[SRP6] Calculated Client Key: {0}", _key);
+                Console.WriteLine("[SRP6] Calculated Client Key: {0}", Util.ByteArrayToHexStr(_srp6.GetClientK()));
 
                 packet.ReadCompleted(size);
 
@@ -362,7 +343,11 @@ public unsafe class AuthSession : SocketBase
 
                 if (header.Result != WOW_SUCCESS)
                 {
-                    Console.WriteLine("[Authentication failed!]");
+                    Console.WriteLine("=================================");
+                    Console.WriteLine("Received A {0}", Util.ByteArrayToHexStr(_srp6.GetClientEphemeralA()));
+                    Console.WriteLine("K {0}", Util.ByteArrayToHexStr(_srp6.GetClientK()));
+                    Console.WriteLine("*===============================*");
+
                     Console.WriteLine(AuthResultToStr(header.Result));
                     CloseSocket();
                     return;
@@ -385,7 +370,7 @@ public unsafe class AuthSession : SocketBase
                         return;
                     }
 
-                    Console.WriteLine("[Authentication Success] M2 is {0}", _srp6.GetClientM2());
+                    Console.WriteLine("[Authentication Success] M2 is {0}", Util.ByteArrayToHexStr(_srp6.GetClientM2()));
                 }
 
                 packet.ReadCompleted(size);
