@@ -88,8 +88,8 @@ public struct RealmlistResponse_Header
 
 public unsafe class AuthSession : SocketBase
 {
-    const string AccountName = "srp6";
-    const string AccountPassword = "aaa123";
+    const string AccountName = "test";
+    const string AccountPassword = "test";
 
     const string GameName = "WoW";
     byte[] GameVersion = new byte[] { 1, 12, 1 };
