@@ -3,6 +3,7 @@ using System.Numerics;
 using System.Net.Sockets;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 
 namespace SRP6ClientDemo;
 
@@ -185,21 +186,14 @@ public unsafe class AuthSession : SocketBase
         SendPacket(packet);
     }
 
-    void SendLogonProof()
+    void SendLogonProof(ReadOnlySpan<byte> crcHash)
     {
-        // TODO: Implement CRC calculation
-        BigInteger crc = new();
-        crc.SetRandom(20 * 8);
-
         ByteBuffer packet = new();
         packet.Append((byte)AUTH_LOGON_PROOF);
 
-        Span<byte> crcBytes = stackalloc byte[20];
-        crc.TryWriteBytes(crcBytes, out var _, true);
-
         packet.Append(_srp6.GetClientEphemeralA());
         packet.Append(_srp6.GetClientM1());
-        packet.Append(crcBytes);
+        packet.Append(crcHash);
 
         if (string.IsNullOrEmpty(_token))
         {
@@ -225,9 +219,26 @@ public unsafe class AuthSession : SocketBase
         SendPacket(packet);
     }
 
+    void CalculateCRCHash(ReadOnlySpan<byte> crcSalt, Span<byte> crcHash)
+    {
+        Span<byte> filesHash = stackalloc byte[SHA1Hash.SHA1_DIGEST_LENGTH];
+        var filesDataToHash = Encoding.UTF8.GetBytes("<SomeFileDataToHash>");
+        HMACSHA1.TryHashData(crcSalt, filesDataToHash, filesHash, out var _);
+
+        using (var sha1 = new SHA1Hash())
+        {
+            sha1.UpdateData(_srp6.GetClientEphemeralA());
+            sha1.UpdateData(filesHash);
+            sha1.Finish();
+            sha1.GetDigest(crcHash);
+        }
+    }
+
     protected override void ReadHandler()
     {
         var packet = GetReadBuffer();
+        Span<byte> crcHash = stackalloc byte[SHA1Hash.SHA1_DIGEST_LENGTH];
+
         while (packet.GetActiveSize() > 0)
         {
             var size = 1;
@@ -316,6 +327,7 @@ public unsafe class AuthSession : SocketBase
                 fixed (byte* ptrg = body.g)
                 fixed (byte* ptrN = body.N)
                 fixed (byte* ptrSalt = body.Salt)
+                fixed (byte* ptrCRCSalt = body.CRCSalt)
                 {
                     _srp6.ProcessChallenge(
                         AccountName, AccountPassword,
@@ -323,13 +335,15 @@ public unsafe class AuthSession : SocketBase
                         new ReadOnlySpan<byte>(ptrg, body.g_length),
                         new ReadOnlySpan<byte>(ptrB, 32),
                         new ReadOnlySpan<byte>(ptrSalt, 32));
+
+                    CalculateCRCHash(new ReadOnlySpan<byte>(ptrCRCSalt, 16), crcHash);
                 }
 
                 Console.WriteLine("[SRP6] Calculated Client Key: {0}", Util.ByteArrayToHexStr(_srp6.GetClientK()));
 
                 packet.ReadCompleted(size);
 
-                SendLogonProof();
+                SendLogonProof(crcHash);
             }
 
             if (cmd == AUTH_LOGON_PROOF)
